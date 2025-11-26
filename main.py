@@ -13,26 +13,11 @@ ou empacotado junto usando PyInstaller (--add-data "Tesseract-OCR;Tesseract-OCR"
 import os
 import sys
 import re
-import time
 import logging
 import tkinter as tk
 from tkinter import ttk, messagebox
-from threading import Thread
-from typing import Optional, Tuple
 from PIL import Image, ImageTk, ImageGrab, ImageOps
 import pytesseract
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import (
-    TimeoutException, 
-    NoSuchElementException, 
-    WebDriverException,
-    UnexpectedAlertPresentException
-)
 
 # Configuração de logging
 logging.basicConfig(
@@ -43,21 +28,59 @@ logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
-# Caminho seguro para recursos
+# Configuração do caminho do Tesseract
 # ----------------------------------------------------------------------
-def resource_path(rel_path: str) -> str:
-    """Retorna o caminho absoluto para recursos empacotados"""
-    base_path = getattr(sys, "_MEIPASS", os.path.abspath("."))
-    return os.path.join(base_path, rel_path)
+def setup_tesseract_path():
+    """
+    Configura o caminho do Tesseract automaticamente.
+    Procura em múltiplos locais para suportar tanto desenvolvimento quanto distribuição.
+    """
+    # Determinar o diretório base do executável/script
+    if getattr(sys, 'frozen', False):
+        # Executável empacotado (PyInstaller)
+        application_path = os.path.dirname(sys.executable)
+    else:
+        # Script Python normal
+        application_path = os.path.dirname(os.path.abspath(__file__))
+    
+    logger.info(f"Diretório da aplicação: {application_path}")
+    
+    # Lista de caminhos possíveis (ordem de prioridade)
+    possible_paths = [
+        # 1. Junto com o executável (para distribuição ZIP)
+        os.path.join(application_path, "Tesseract-OCR", "tesseract.exe"),
+        
+        # 2. Pasta _internal do PyInstaller (--onedir)
+        os.path.join(application_path, "_internal", "Tesseract-OCR", "tesseract.exe"),
+        
+        # 3. Diretório temporário do PyInstaller (--onefile)
+        os.path.join(getattr(sys, "_MEIPASS", ""), "Tesseract-OCR", "tesseract.exe"),
+        
+        # 4. Instalações padrão do sistema
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        r"C:\Tesseract-OCR\tesseract.exe",
+    ]
+    
+    # Tentar cada caminho
+    for path in possible_paths:
+        if path and os.path.isfile(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+            logger.info(f"✓ Tesseract encontrado: {path}")
+            return True
+        else:
+            logger.debug(f"✗ Não encontrado: {path}")
+    
+    logger.error("Tesseract não foi encontrado em nenhum caminho!")
+    return False
 
 
-# Configuração do Tesseract
-pytesseract.pytesseract.tesseract_cmd = resource_path(
-    os.path.join("Tesseract-OCR", "tesseract.exe")
-)
+# Configurar Tesseract ao importar o módulo
+tesseract_configured = setup_tesseract_path()
+
 
 # ----------------------------------------------------------------------
-# Aplicação principal (otimizada)
+# Aplicação principal
 # ----------------------------------------------------------------------
 class OCRApp(tk.Tk):
     """Aplicação principal de captura e OCR de números"""
@@ -74,7 +97,31 @@ class OCRApp(tk.Tk):
         self._setup_styles()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        # Verificar se Tesseract foi configurado
+        if not tesseract_configured:
+            self.after(500, self._show_tesseract_error)
+        
         logger.info("Aplicação inicializada com sucesso")
+    
+    def _show_tesseract_error(self):
+        """Exibe erro se Tesseract não foi encontrado"""
+        if getattr(sys, 'frozen', False):
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        messagebox.showerror(
+            "Tesseract não encontrado",
+            f"O Tesseract-OCR não foi localizado!\n\n"
+            f"Certifique-se de que a pasta 'Tesseract-OCR' está no mesmo diretório do programa:\n"
+            f"{app_dir}\n\n"
+            f"Estrutura necessária:\n"
+            f"  • {os.path.basename(sys.executable if getattr(sys, 'frozen', False) else 'programa.exe')}\n"
+            f"  • Tesseract-OCR\\\n"
+            f"      └── tesseract.exe\n"
+            f"      └── tessdata\\"
+        )
     
     def _setup_initial_state(self):
         """Inicializa o estado da aplicação"""
@@ -114,17 +161,6 @@ class OCRApp(tk.Tk):
             'Clear.TButton',
             background=[('active', '#c0392b'), ('pressed', '#a93226')]
         )
-        
-        # Estilo dos botões especiais
-        style.configure(
-            'Special.TButton',
-            font=('Segoe UI', 10, 'bold'),
-            padding=(15, 8)
-        )
-        style.map(
-            'Special.TButton',
-            background=[('active', '#229954'), ('pressed', '#1e8449')]
-        )
 
     def _build_ui(self):
         """Constrói a interface do usuário"""
@@ -145,7 +181,7 @@ class OCRApp(tk.Tk):
         buttons_config = [
             ("📋 Colar", 'Toolbar.TButton', self.paste_image),
             ("📄 Copiar", 'Toolbar.TButton', self.copy_text),
-            ("🗑️ Limpar", 'Clear.TButton', self.confirm_clear),
+            ("🗑 Limpar", 'Clear.TButton', self.confirm_clear),
         ]
         
         for text, style, command in buttons_config:
@@ -168,12 +204,6 @@ class OCRApp(tk.Tk):
             style='Toolbar.TButton',
             command=self.show_history
         ).pack(side="left", padx=5)
-        
-        # Separador
-        tk.Frame(btn_container, bg="#7f8c8d", width=2).pack(
-            side="left", padx=15, fill="y", pady=8
-        )
-        
 
     def _build_main_content(self):
         """Constrói o conteúdo principal"""
@@ -270,23 +300,27 @@ class OCRApp(tk.Tk):
         self.image_canvas.config(scrollregion=self.image_canvas.bbox("all"))
 
     def _process_image(self, img: Image.Image) -> Image.Image:
-        """
-        Processa a imagem para melhorar OCR.
-        
-        """
+        """Processa a imagem para melhorar OCR"""
         try:
             # Converter para escala de cinza
             gray = img.convert("L")
             
-            # Auto-contrast
-            gray = ImageOps.autocontrast(gray)
+            # Aumentar contraste
+            gray = ImageOps.autocontrast(gray, cutoff=1)
             
-            # Ampliar a imagem (melhora OCR)
+            # Ampliar MUITO a imagem (OCR funciona melhor com imagens grandes)
             w, h = gray.size
-            gray = gray.resize((w * 2, h * 2))
+            scale = 4  # 4x maior
+            gray = gray.resize((w * scale, h * scale), Image.Resampling.LANCZOS)
             
-            # Converter para preto e branco
-            bw = gray.point(lambda x: 255 if x > 150 else 0, mode="1")
+            # Aplicar sharpening (nitidez)
+            from PIL import ImageFilter
+            gray = gray.filter(ImageFilter.SHARPEN)
+            
+            # Binarização com threshold adaptativo
+            # Teste diferentes thresholds para ver qual funciona melhor
+            threshold = 170
+            bw = gray.point(lambda x: 255 if x > threshold else 0, mode="1")
             
             return bw.convert("RGB")
             
@@ -295,27 +329,68 @@ class OCRApp(tk.Tk):
             raise
 
     def _extract_numbers_from_image(self, img: Image.Image) -> list:
-        """
-        Extrai números da imagem usando OCR.
-        
-        Args:
-            img: Imagem PIL (preto e branco)
-            
-        Returns:
-            Lista de números encontrados
-        """
+        """Extrai números da imagem usando OCR com múltiplas estratégias"""
         try:
-            config = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789"
-            raw = pytesseract.image_to_string(img, lang="eng", config=config)
-            nums = re.findall(r"\d+", raw)
-            logger.info(f"OCR encontrou {len(nums)} números")
-            return nums
+            all_numbers = []
+            
+            # Estratégia 1: PSM 6 (bloco de texto uniforme)
+            config1 = "--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789/"
+            raw1 = pytesseract.image_to_string(img, lang="eng", config=config1)
+            logger.debug(f"OCR PSM 6: {raw1}")
+            
+            # Estratégia 2: PSM 11 (texto esparso - melhor para números isolados)
+            config2 = "--oem 3 --psm 11 -c tessedit_char_whitelist=0123456789/"
+            raw2 = pytesseract.image_to_string(img, lang="eng", config=config2)
+            logger.debug(f"OCR PSM 11: {raw2}")
+            
+            # Estratégia 3: PSM 7 (linha única)
+            config3 = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789/"
+            raw3 = pytesseract.image_to_string(img, lang="eng", config=config3)
+            logger.debug(f"OCR PSM 7: {raw3}")
+            
+            # Combinar resultados de todas estratégias
+            combined = raw1 + "\n" + raw2 + "\n" + raw3
+            
+            # Separar por quebras de linha e espaços
+            lines = combined.replace("/", "\n").split("\n")
+            
+            for line in lines:
+                # Extrair números de cada linha
+                # Aceita números com 1+ dígitos
+                nums_in_line = re.findall(r"\d+", line.strip())
+                all_numbers.extend(nums_in_line)
+            
+            # Remover duplicatas mantendo a ordem
+            seen = set()
+            unique_numbers = []
+            for num in all_numbers:
+                if num not in seen and len(num) >= 1:
+                    seen.add(num)
+                    unique_numbers.append(num)
+            
+            # Filtrar números muito grandes
+            unique_numbers = [n for n in unique_numbers if len(n) <= 15]
+            
+            logger.info(f"OCR encontrou {len(unique_numbers)} números únicos")
+            logger.debug(f"Números extraídos: {unique_numbers}")
+            
+            return unique_numbers
             
         except pytesseract.TesseractNotFoundError:
-            logger.error("Tesseract não encontrado")
+            logger.error("Tesseract não encontrado durante OCR")
+            
+            if getattr(sys, 'frozen', False):
+                app_dir = os.path.dirname(sys.executable)
+            else:
+                app_dir = os.path.dirname(os.path.abspath(__file__))
+            
             messagebox.showerror(
                 "Tesseract não encontrado",
-                "O executável do Tesseract não foi localizado."
+                f"O executável do Tesseract não foi localizado.\n\n"
+                f"Certifique-se de que existe a pasta:\n"
+                f"{os.path.join(app_dir, 'Tesseract-OCR')}\n\n"
+                f"E que dentro dela está o arquivo:\n"
+                f"tesseract.exe"
             )
             return []
         except Exception as e:
