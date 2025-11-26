@@ -45,21 +45,27 @@ def setup_tesseract_path():
     
     logger.info(f"Diretório da aplicação: {application_path}")
     
+    # Pasta pai (um nível acima - útil quando executável está em dist/)
+    parent_path = os.path.dirname(application_path)
+    
     # Lista de caminhos possíveis (ordem de prioridade)
     possible_paths = [
-        # 1. Junto com o executável (para distribuição ZIP)
-        os.path.join(application_path, "Tesseract-OCR", "tesseract.exe"),
-        
-        # 2. Pasta _internal do PyInstaller (--onedir)
-        os.path.join(application_path, "_internal", "Tesseract-OCR", "tesseract.exe"),
-        
-        # 3. Diretório temporário do PyInstaller (--onefile)
-        os.path.join(getattr(sys, "_MEIPASS", ""), "Tesseract-OCR", "tesseract.exe"),
-        
-        # 4. Instalações padrão do sistema
+        # 1. PRIMEIRO: Instalações padrão do sistema
         r"C:\Program Files\Tesseract-OCR\tesseract.exe",
         r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
         r"C:\Tesseract-OCR\tesseract.exe",
+        
+        # 2. Junto com o executável (mesma pasta)
+        os.path.join(application_path, "Tesseract-OCR", "tesseract.exe"),
+        
+        # 3. Na pasta pai (para quando executável está em dist/)
+        os.path.join(parent_path, "Tesseract-OCR", "tesseract.exe"),
+        
+        # 4. Pasta _internal do PyInstaller (--onedir)
+        os.path.join(application_path, "_internal", "Tesseract-OCR", "tesseract.exe"),
+        
+        # 5. Diretório temporário do PyInstaller (--onefile)
+        os.path.join(getattr(sys, "_MEIPASS", ""), "Tesseract-OCR", "tesseract.exe"),
     ]
     
     # Tentar cada caminho
@@ -110,18 +116,53 @@ class OCRApp(tk.Tk):
             app_dir = os.path.dirname(sys.executable)
         else:
             app_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        parent_dir = os.path.dirname(app_dir)
+        
+        # Criar log de diagnóstico
+        diagnostic = f"""DIAGNÓSTICO DO TESSERACT:
+
+Diretório do executável/script:
+{app_dir}
+
+Diretório pai:
+{parent_dir}
+
+Caminhos verificados:
+"""
+        
+        # Lista dos caminhos que foram verificados
+        paths_checked = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            r"C:\Tesseract-OCR\tesseract.exe",
+            os.path.join(app_dir, "Tesseract-OCR", "tesseract.exe"),
+            os.path.join(parent_dir, "Tesseract-OCR", "tesseract.exe"),
+        ]
+        
+        for path in paths_checked:
+            exists = "✓ EXISTE" if os.path.isfile(path) else "✗ NÃO EXISTE"
+            diagnostic += f"\n{exists}: {path}"
+        
+        diagnostic += f"\n\nTesseract configurado como:\n{pytesseract.pytesseract.tesseract_cmd}"
+        
+        # Salvar log em arquivo
+        log_file = os.path.join(app_dir, "tesseract_diagnostic.txt")
+        try:
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.write(diagnostic)
+            diagnostic += f"\n\nLog salvo em: {log_file}"
+        except:
+            pass
             
         messagebox.showerror(
             "Tesseract não encontrado",
             f"O Tesseract-OCR não foi localizado!\n\n"
-            f"Certifique-se de que a pasta 'Tesseract-OCR' está no mesmo diretório do programa:\n"
-            f"{app_dir}\n\n"
-            f"Estrutura necessária:\n"
-            f"  • {os.path.basename(sys.executable if getattr(sys, 'frozen', False) else 'programa.exe')}\n"
-            f"  • Tesseract-OCR\\\n"
-            f"      └── tesseract.exe\n"
-            f"      └── tessdata\\"
+            f"Verifique o arquivo de diagnóstico:\n{log_file}\n\n"
+            f"Ou veja os detalhes no console."
         )
+        
+        print(diagnostic)  # Imprimir no console também
     
     def _setup_initial_state(self):
         """Inicializa o estado da aplicação"""
